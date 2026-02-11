@@ -18,6 +18,7 @@ import importlib.resources as ilr
 import json
 import os
 import re
+import hashlib
 from typing import Optional
 
 # Optional access to registered engines for discovery
@@ -72,6 +73,13 @@ ALIASES_IMPORT_TO_PACKAGE: dict[str, str] = {}
 
 # Aliases package_name -> import_name canonique utilisé pour PyInstaller --collect-all. Extensible à l'exécution.
 PACKAGE_TO_IMPORT_NAME: dict[str, str] = {}
+
+# Lightweight caches to avoid heavy rescans
+_REQ_CACHE: dict[str, tuple[int, int, set[str]]] = {}
+_PYPROJECT_CACHE: dict[str, tuple[int, int, set[str]]] = {}
+_IMPORT_SCAN_CACHE: dict[tuple[str, str], set[str]] = {}
+# Cache auto args per engine + workspace + inputs signature
+_AUTO_ARGS_CACHE: dict[tuple[str, str, str, str, str], list[str]] = {}
 
 
 # Fonctions d'extension d'alias (plug-and-play)
@@ -172,6 +180,66 @@ def _read_json_file(path: str) -> dict[str, dict[str, Optional[str]]]:
     return normed
 
 
+def _file_sig(path: str) -> tuple[int, int]:
+    try:
+        st = os.stat(path)
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except Exception:
+        return (0, 0)
+
+
+def _hash_file_list(files: list[str]) -> str:
+    h = hashlib.sha1()
+    for p in files:
+        try:
+            m, s = _file_sig(p)
+            h.update(p.encode("utf-8", "ignore"))
+            h.update(str(m).encode("ascii", "ignore"))
+            h.update(str(s).encode("ascii", "ignore"))
+        except Exception:
+            continue
+    return h.hexdigest()
+
+
+def _modules_sig(mods: set[str]) -> str:
+    try:
+        h = hashlib.sha1()
+        for m in sorted(mods):
+            h.update(m.encode("utf-8", "ignore"))
+            h.update(b"\0")
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _mapping_sig(engine_id: str, used_path: Optional[str]) -> str:
+    """Build a lightweight signature for mapping inputs."""
+    try:
+        project_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+        )
+        candidates: list[str] = []
+        if used_path:
+            candidates.append(used_path)
+        # Project mapping file
+        p1 = os.path.join(project_root, "ENGINES", engine_id, "mapping.json")
+        if os.path.isfile(p1):
+            candidates.append(p1)
+        # Env mapping file
+        env_path = os.environ.get("PYCOMPILER_MAPPING")
+        if env_path and os.path.isfile(env_path):
+            candidates.append(env_path)
+        h = hashlib.sha1()
+        for p in candidates:
+            m, s = _file_sig(p)
+            h.update(p.encode("utf-8", "ignore"))
+            h.update(str(m).encode("ascii", "ignore"))
+            h.update(str(s).encode("ascii", "ignore"))
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
 def _load_mapping(
     base_dir: str, workspace_dir: Optional[str] = None
 ) -> tuple[dict[str, dict[str, Optional[str]]], Optional[str]]:
@@ -201,6 +269,14 @@ def _parse_requirements(requirements_path: str) -> set[str]:
     found: set[str] = set()
     if not os.path.isfile(requirements_path):
         return found
+    # Cache by file mtime/size
+    try:
+        mtime, size = _file_sig(requirements_path)
+        cached = _REQ_CACHE.get(requirements_path)
+        if cached and cached[0] == mtime and cached[1] == size:
+            return set(cached[2])
+    except Exception:
+        pass
     rx_egg = re.compile(r"[#&]egg=([A-Za-z0-9_.\-]+)")
     rx_name = re.compile(r"^([A-Za-z0-9_.\-]+)")
     try:
@@ -251,6 +327,10 @@ def _parse_requirements(requirements_path: str) -> set[str]:
                         found.add(m3.group(1))
     except Exception:
         return found
+    try:
+        _REQ_CACHE[requirements_path] = (_file_sig(requirements_path)[0], _file_sig(requirements_path)[1], set(found))
+    except Exception:
+        pass
     return found
 
 
@@ -263,6 +343,14 @@ def _scan_imports(py_files: list[str], workspace_dir: str) -> set[str]:
     found: set[str] = set()
     # Exclure venv interne
     venv_dir = os.path.abspath(os.path.join(workspace_dir, "venv"))
+    try:
+        sig = _hash_file_list(py_files)
+        cache_key = (os.path.abspath(workspace_dir), sig)
+        cached = _IMPORT_SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return set(cached)
+    except Exception:
+        cache_key = None
     size_cap = 1_500_000
     for file in py_files:
         af = os.path.abspath(file)
@@ -302,6 +390,11 @@ def _scan_imports(py_files: list[str], workspace_dir: str) -> set[str]:
     # Filtre stdlib et modules internes (fichiers du projet)
     internal_names = {os.path.splitext(os.path.basename(p))[0] for p in py_files}
     result = {m for m in found if not _is_stdlib_module(m) and m not in internal_names}
+    try:
+        if cache_key is not None:
+            _IMPORT_SCAN_CACHE[cache_key] = set(result)
+    except Exception:
+        pass
     return result
 
 
@@ -504,6 +597,13 @@ def _detect_modules_preferring_requirements(self) -> tuple[set[str], str]:
     try:
         pyproj = os.path.join(self.workspace_dir, "pyproject.toml")
         if _tomllib is not None and os.path.isfile(pyproj):
+            try:
+                mtime, size = _file_sig(pyproj)
+                cached = _PYPROJECT_CACHE.get(pyproj)
+                if cached and cached[0] == mtime and cached[1] == size:
+                    return set(cached[2]), "pyproject"
+            except Exception:
+                pass
             with open(pyproj, "rb") as f:
                 data = _tomllib.load(f)
             mods: set[str] = set()
@@ -533,6 +633,14 @@ def _detect_modules_preferring_requirements(self) -> tuple[set[str], str]:
                     if isinstance(k, str) and k and k != "python":
                         mods.add(k)
             if mods:
+                try:
+                    _PYPROJECT_CACHE[pyproj] = (
+                        _file_sig(pyproj)[0],
+                        _file_sig(pyproj)[1],
+                        set(mods),
+                    )
+                except Exception:
+                    pass
                 return mods, "pyproject"
     except Exception:
         pass
@@ -772,31 +880,50 @@ def compute_auto_for_engine(self, engine_id: str) -> list[str]:
 
     detected, source = _detect_modules_preferring_requirements(self)
     matched, pkg_to_import = _match_with_requirements_aware(detected, mapping)
-    builder = _ENGINE_BUILDERS.get(engine_id) or _default_builder_for_engine(engine_id)
-    try:
-        if engine_id not in _ENGINE_BUILDERS:
-            self.log.append(
-                _tr(
-                    self,
-                    f"ℹ️ Builder générique utilisé pour le moteur '{engine_id}'.",
-                    f"ℹ️ Generic builder used for engine '{engine_id}'.",
-                )
-            )
-    except Exception:
-        pass
 
-    try:
-        args = builder(matched, pkg_to_import)
-    except Exception as e:
-        args = []
+    # Cache auto args to avoid rebuilding for same inputs
+    ws = str(getattr(self, "workspace_dir", "") or "")
+    map_sig = _mapping_sig(engine_id, eng_used_path)
+    mods_sig = _modules_sig(detected)
+    cache_key = (engine_id, ws, map_sig, source, mods_sig)
+    cached_args = _AUTO_ARGS_CACHE.get(cache_key)
+    if cached_args is not None:
+        args = list(cached_args)
+        used_cache = True
+    else:
+        used_cache = False
+        builder = _ENGINE_BUILDERS.get(engine_id) or _default_builder_for_engine(
+            engine_id
+        )
+    if not used_cache:
         try:
-            self.log.append(
-                _tr(
-                    self,
-                    f"⚠️ Erreur constructeur auto-args pour '{engine_id}': {e}",
-                    f"⚠️ Auto-args builder error for '{engine_id}': {e}",
+            if engine_id not in _ENGINE_BUILDERS:
+                self.log.append(
+                    _tr(
+                        self,
+                        f"ℹ️ Builder générique utilisé pour le moteur '{engine_id}'.",
+                        f"ℹ️ Generic builder used for engine '{engine_id}'.",
+                    )
                 )
-            )
+        except Exception:
+            pass
+
+        try:
+            args = builder(matched, pkg_to_import)
+        except Exception as e:
+            args = []
+            try:
+                self.log.append(
+                    _tr(
+                        self,
+                        f"⚠️ Erreur constructeur auto-args pour '{engine_id}': {e}",
+                        f"⚠️ Auto-args builder error for '{engine_id}': {e}",
+                    )
+                )
+            except Exception:
+                pass
+        try:
+            _AUTO_ARGS_CACHE[cache_key] = list(args)
         except Exception:
             pass
 
@@ -844,6 +971,14 @@ def compute_auto_for_engine(self, engine_id: str) -> list[str]:
                     self,
                     f"   Aucune option {engine_id} supplémentaire requise d'après le mapping.",
                     f"   No additional {engine_id} options required from mapping.",
+                )
+            )
+        if used_cache:
+            self.log.append(
+                _tr(
+                    self,
+                    "   (Cache) Résultat auto-args réutilisé.",
+                    "   (Cache) Auto-args result reused.",
                 )
             )
     except Exception:

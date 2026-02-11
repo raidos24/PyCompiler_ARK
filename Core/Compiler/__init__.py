@@ -187,6 +187,21 @@ def compile_all(self) -> None:
     if not engine_id:
         engine_id = "pyinstaller"  # Moteur par défaut
 
+    # Auto-save engine settings if user opted-in and no config exists yet
+    try:
+        from Core.EngineSettings import engine_settings_path
+
+        if (
+            hasattr(self, "get_remember_engine_settings")
+            and self.get_remember_engine_settings()
+        ):
+            cfg_path = engine_settings_path(self.workspace_dir, engine_id)
+            if not os.path.isfile(cfg_path):
+                if hasattr(self, "save_current_engine_settings"):
+                    self.save_current_engine_settings()
+    except Exception:
+        pass
+
     # Obtenir le moteur (instance)
     try:
         engine = create(engine_id)

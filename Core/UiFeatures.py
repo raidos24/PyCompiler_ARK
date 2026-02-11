@@ -103,6 +103,97 @@ class UiFeatures:
         self.update_command_preview()
 
     # =========================================================================
+    # ENGINE SETTINGS (PER-PROJECT)
+    # =========================================================================
+
+    def _current_engine_id(self) -> str | None:
+        try:
+            if hasattr(self, "compiler_tabs") and self.compiler_tabs:
+                import EngineLoader as engines_loader
+
+                idx = self.compiler_tabs.currentIndex()
+                return engines_loader.registry.get_engine_for_tab(idx)
+        except Exception:
+            pass
+        return None
+
+    def _current_engine_tab(self):
+        try:
+            if hasattr(self, "compiler_tabs") and self.compiler_tabs:
+                return self.compiler_tabs.currentWidget()
+        except Exception:
+            pass
+        return None
+
+    def save_current_engine_settings(self) -> None:
+        try:
+            from Core.EngineSettings import save_engine_settings
+
+            ws = getattr(self, "workspace_dir", None)
+            if not ws:
+                return
+            eid = self._current_engine_id() or "pyinstaller"
+            root = self._current_engine_tab()
+            if root is None:
+                return
+            path = save_engine_settings(ws, eid, root)
+            if path and hasattr(self, "log") and self.log:
+                self.log.append(
+                    self.tr(
+                        f"💾 Paramètres moteur sauvegardés: {path}",
+                        f"💾 Engine settings saved: {path}",
+                    )
+                )
+        except Exception:
+            pass
+
+    def apply_engine_settings_for_current_engine(self) -> None:
+        try:
+            from Core.EngineSettings import apply_widget_settings, load_engine_settings
+
+            ws = getattr(self, "workspace_dir", None)
+            if not ws:
+                return
+            eid = self._current_engine_id() or "pyinstaller"
+            root = self._current_engine_tab()
+            if root is None:
+                return
+            data = load_engine_settings(ws, eid)
+            if data:
+                apply_widget_settings(root, data)
+        except Exception:
+            pass
+
+    def set_remember_engine_settings(self, value: bool) -> None:
+        try:
+            from Core.EngineSettings import set_remember_pref
+
+            ws = getattr(self, "workspace_dir", None)
+            if not ws:
+                return
+            set_remember_pref(ws, bool(value))
+        except Exception:
+            pass
+
+    def get_remember_engine_settings(self) -> bool:
+        try:
+            from Core.EngineSettings import get_remember_pref
+
+            ws = getattr(self, "workspace_dir", None)
+            if not ws:
+                return False
+            return bool(get_remember_pref(ws))
+        except Exception:
+            return False
+
+    def refresh_engine_settings_menu(self) -> None:
+        try:
+            act = getattr(self, "_act_engine_remember", None)
+            if act is not None:
+                act.setChecked(self.get_remember_engine_settings())
+        except Exception:
+            pass
+    # =========================================================================
     # DIALOGUE D'AIDE
     # =========================================================================
 

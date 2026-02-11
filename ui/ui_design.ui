@@ -143,6 +143,16 @@
           </widget>
          </item>
          <item>
+          <widget class="QToolButton" name="btn_engine_settings">
+           <property name="text">
+            <string>...</string>
+           </property>
+           <property name="toolTip">
+            <string>Engine settings</string>
+           </property>
+          </widget>
+         </item>
+         <item>
           <widget class="QPushButton" name="compile_btn">
            <property name="text">
             <string>🚀 Compiler</string>

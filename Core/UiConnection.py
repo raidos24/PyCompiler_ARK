@@ -27,7 +27,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QToolButton,
+    QMenu,
 )
+from PySide6.QtGui import QAction
 
 from Core import i18n as _i18n
 from .i18n import _apply_main_app_translations, show_language_dialog
@@ -207,6 +210,7 @@ def init_ui(self):
     self.compile_btn = self.ui.findChild(QPushButton, "compile_btn")
     self.cancel_btn = self.ui.findChild(QPushButton, "cancel_btn")
     self.btn_help = self.ui.findChild(QPushButton, "btn_help")
+    self.btn_engine_settings = self.ui.findChild(QToolButton, "btn_engine_settings")
 
     # Statut workspace dans l'en-tête
     if self.label_workspace_status:
@@ -276,6 +280,45 @@ def init_ui(self):
     if self.file_filter_input:
         try:
             self.file_filter_input.textChanged.connect(self.apply_file_filter)
+        except Exception:
+            pass
+
+    # Engine settings menu (three-dot)
+    if self.btn_engine_settings:
+        try:
+            menu = QMenu(self.btn_engine_settings)
+            act_save = QAction(
+                self.tr(
+                    "Sauvegarder les paramètres du moteur",
+                    "Save engine settings",
+                ),
+                self,
+            )
+            act_remember = QAction(
+                self.tr(
+                    "Se souvenir des paramètres du moteur pour ce projet",
+                    "Remember engine settings for this project",
+                ),
+                self,
+            )
+            act_remember.setCheckable(True)
+            act_remember.setChecked(self.get_remember_engine_settings())
+            act_save.triggered.connect(self.save_current_engine_settings)
+            act_remember.toggled.connect(self.set_remember_engine_settings)
+            menu.addAction(act_save)
+            menu.addAction(act_remember)
+            self.btn_engine_settings.setMenu(menu)
+            self.btn_engine_settings.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            self._act_engine_remember = act_remember
+        except Exception:
+            pass
+
+    # Apply engine settings on tab change
+    if self.compiler_tabs:
+        try:
+            self.compiler_tabs.currentChanged.connect(
+                lambda _i: self.apply_engine_settings_for_current_engine()
+            )
         except Exception:
             pass
 

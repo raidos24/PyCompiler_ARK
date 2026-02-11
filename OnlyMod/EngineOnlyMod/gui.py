@@ -58,6 +58,8 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
+    QMenu,
 )
 from PySide6.QtGui import QIcon, QAction, QFont, QPixmap
 
@@ -212,6 +214,7 @@ class EnginesStandaloneGui(QMainWindow):
 
         # Configuration de l'interface
         self._setup_ui()
+        self._setup_engine_settings_menu()
         self._apply_theme(theme)
         self._apply_language(language)
 
@@ -405,6 +408,12 @@ class EnginesStandaloneGui(QMainWindow):
         self.compiler_tabs.setTabsClosable(False)
         self.compiler_tabs.setMovable(False)
         self.compiler_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        try:
+            self.compiler_tabs.currentChanged.connect(
+                lambda _i: self._apply_engine_settings_current()
+            )
+        except Exception:
+            pass
         engine_layout.addWidget(self.compiler_tabs)
 
         compat_btn = QPushButton("Check Compatibility")
@@ -537,6 +546,14 @@ class EnginesStandaloneGui(QMainWindow):
         refresh_btn.setMinimumHeight(32)
         refresh_btn.clicked.connect(self._refresh_engines)
         button_row.addWidget(refresh_btn)
+
+        self.btn_engine_settings = QToolButton()
+        self.btn_engine_settings.setText("...")
+        self.btn_engine_settings.setToolTip("Engine settings")
+        self.btn_engine_settings.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        button_row.addWidget(self.btn_engine_settings)
 
         clear_log_btn = QPushButton("Clear Log")
         clear_log_btn.setMinimumHeight(32)
@@ -750,6 +767,107 @@ class EnginesStandaloneGui(QMainWindow):
         except RuntimeError:
             return False
 
+    # =========================================================================
+    # ENGINE SETTINGS (PER-PROJECT)
+    # =========================================================================
+
+    def _setup_engine_settings_menu(self):
+        try:
+            if not hasattr(self, "btn_engine_settings") or not self.btn_engine_settings:
+                return
+            menu = QMenu(self.btn_engine_settings)
+            if self.language == "fr":
+                act_save = QAction("Sauvegarder les paramètres du moteur", self)
+                act_remember = QAction(
+                    "Se souvenir des paramètres du moteur pour ce projet", self
+                )
+            else:
+                act_save = QAction("Save engine settings", self)
+                act_remember = QAction(
+                    "Remember engine settings for this project", self
+                )
+            act_remember.setCheckable(True)
+            act_remember.setChecked(self._get_remember_engine_settings())
+            act_save.triggered.connect(self._save_engine_settings_current)
+            act_remember.toggled.connect(self._set_remember_engine_settings)
+            menu.addAction(act_save)
+            menu.addAction(act_remember)
+            self.btn_engine_settings.setMenu(menu)
+        except Exception:
+            pass
+
+    def _get_current_engine_id(self) -> Optional[str]:
+        try:
+            current_index = self.compiler_tabs.currentIndex()
+            if current_index < 0:
+                return None
+            engine_id = engines_loader.registry.get_engine_for_tab(current_index)
+            if engine_id:
+                return engine_id
+            if self.engines_info:
+                return list(self.engines_info.keys())[current_index]
+        except Exception:
+            pass
+        return None
+
+    def _get_current_engine_tab(self):
+        try:
+            return self.compiler_tabs.currentWidget()
+        except Exception:
+            return None
+
+    def _get_remember_engine_settings(self) -> bool:
+        try:
+            from Core.EngineSettings import get_remember_pref
+
+            if not self.workspace_dir:
+                return False
+            return bool(get_remember_pref(self.workspace_dir))
+        except Exception:
+            return False
+
+    def _set_remember_engine_settings(self, value: bool) -> None:
+        try:
+            from Core.EngineSettings import set_remember_pref
+
+            if not self.workspace_dir:
+                return
+            set_remember_pref(self.workspace_dir, bool(value))
+        except Exception:
+            pass
+
+    def _save_engine_settings_current(self) -> None:
+        try:
+            from Core.EngineSettings import save_engine_settings
+
+            if not self.workspace_dir:
+                return
+            eid = self._get_current_engine_id()
+            root = self._get_current_engine_tab()
+            if not eid or root is None:
+                return
+            path = save_engine_settings(self.workspace_dir, eid, root)
+            if path:
+                self._log(f"Engine settings saved: {path}")
+        except Exception:
+            pass
+
+    def _apply_engine_settings_current(self) -> None:
+        try:
+            from Core.EngineSettings import apply_widget_settings, load_engine_settings
+
+            if not self.workspace_dir:
+                return
+            eid = self._get_current_engine_id()
+            root = self._get_current_engine_tab()
+            if not eid or root is None:
+                return
+            data = load_engine_settings(self.workspace_dir, eid)
+            if data:
+                apply_widget_settings(root, data)
+        except Exception:
+            pass
+
     def _apply_theme(self, theme_name: str):
         """Applique le thème visuel."""
         if theme_name == "dark":
@@ -943,6 +1061,10 @@ class EnginesStandaloneGui(QMainWindow):
                 child.setTitle(tr["actions"])
             elif "log" in title:
                 child.setTitle(tr["log"])
+        try:
+            self._setup_engine_settings_menu()
+        except Exception:
+            pass
 
     def _refresh_engines(self):
         """Rafraîchit la liste des moteurs disponibles et crée leurs onglets."""
@@ -1120,6 +1242,14 @@ class EnginesStandaloneGui(QMainWindow):
         if workspace_dir:
             self.workspace_edit.setText(workspace_dir)
             self.workspace_dir = workspace_dir
+            try:
+                self._setup_engine_settings_menu()
+            except Exception:
+                pass
+            try:
+                self._apply_engine_settings_current()
+            except Exception:
+                pass
 
     def _run_compilation(self):
         """Exécute la compilation avec le moteur de l'onglet courant."""
@@ -1184,6 +1314,17 @@ class EnginesStandaloneGui(QMainWindow):
 
         # Mise à jour du workspace
         self.workspace_dir = self.workspace_edit.text()
+
+        # Auto-save engine settings if user opted-in and no config exists yet
+        try:
+            from Core.EngineSettings import engine_settings_path
+
+            if self._get_remember_engine_settings() and self.workspace_dir:
+                cfg_path = engine_settings_path(self.workspace_dir, engine_id)
+                if not os.path.isfile(cfg_path):
+                    self._save_engine_settings_current()
+        except Exception:
+            pass
 
         # Afficher le statut
         self.statusBar.showMessage(

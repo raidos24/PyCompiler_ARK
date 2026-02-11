@@ -303,6 +303,14 @@ def get_engine_for_tab(index: int) -> Optional[str]:
     return None
 
 
+def get_tab_index(eid: str) -> Optional[int]:
+    try:
+        idx = _TAB_INDEX.get(eid)
+        return int(idx) if idx is not None else None
+    except Exception:
+        return None
+
+
 def load_engine_language_file(engine_package: str, code: str) -> dict:
     """Load language file for an engine from its package's languages folder.
 

@@ -204,6 +204,17 @@ class SetupWorkspace:
                 gui_instance.update_command_preview()
 
             try:
+                if hasattr(gui_instance, "apply_engine_settings_for_current_engine"):
+                    gui_instance.apply_engine_settings_for_current_engine()
+            except Exception:
+                pass
+            try:
+                if hasattr(gui_instance, "refresh_engine_settings_menu"):
+                    gui_instance.refresh_engine_settings_menu()
+            except Exception:
+                pass
+
+            try:
                 gui_instance.save_preferences()
             except Exception:
                 pass
